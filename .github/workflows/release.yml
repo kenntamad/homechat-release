@@ -1,0 +1,121 @@
+# Builds Home Chat for Windows and Android and publishes a GitHub release.
+# The apps check this repository's latest release and update themselves.
+#
+# To release:   git tag v2.1.0 && git push origin v2.1.0
+#
+# One-time setup (Settings > Secrets and variables > Actions > New repository secret):
+#   ANDROID_KEYSTORE_BASE64   base64 of app/android/app/homechat-release.jks
+#   ANDROID_KEYSTORE_PASSWORD the password in app/android/key.properties
+# (app/tool/github-secrets.ps1 sets both for you with the GitHub CLI.)
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build, e.g. 2.1.0 (creates tag v2.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ github.event.inputs.version || github.ref_name }}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Set version
+        run: dart run tool/set_version.dart ${{ env.VERSION }} ${{ github.run_number }}
+      - name: Prepare project
+        run: |
+          flutter create --org net.homechat --project-name homechat --platforms windows,android .
+          dart run tool/patch_platforms.dart
+          flutter pub get
+      - name: Test
+        run: flutter test
+      - name: Build
+        run: flutter build windows --release
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath HomeChat-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: app/HomeChat-windows-x64.zip
+
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Set version
+        run: dart run tool/set_version.dart ${{ env.VERSION }} ${{ github.run_number }}
+      - name: Prepare project
+        run: |
+          flutter create --org net.homechat --project-name homechat --platforms windows,android .
+          dart run tool/patch_platforms.dart
+          flutter pub get
+      - name: Signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::Add the ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD secrets first (see README > Releases)."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/homechat-release.jks
+          printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=homechat\nstoreFile=homechat-release.jks\n' \
+            "$KEYSTORE_PASSWORD" "$KEYSTORE_PASSWORD" > android/key.properties
+      - name: Build
+        run: |
+          flutter build apk --release
+          cp build/app/outputs/flutter-apk/app-release.apk HomeChat-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: app/HomeChat-android.apk
+
+  release:
+    needs: [windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Tag name
+        id: tag
+        run: |
+          v="${VERSION#v}"
+          echo "tag=v$v" >> "$GITHUB_OUTPUT"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Home Chat ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/HomeChat-windows-x64.zip
+            dist/HomeChat-android.apk

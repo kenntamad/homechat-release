@@ -1,0 +1,17 @@
+# Build output
+app/build/
+app/.dart_tool/
+**/HomeChat-*.zip
+**/HomeChat-*.apk
+
+# Signing secrets: back these up, never commit them
+app/android/key.properties
+**/*.jks
+**/*.keystore
+
+# Local / editor
+.env
+data/
+.idea/
+*.iml
+.DS_Store
